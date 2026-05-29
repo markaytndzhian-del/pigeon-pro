@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Portable Pigeon Pro</title>
+    <style>
+        body {
+            margin: 0; padding: 20px; background: #1a1a1a; color: #eee;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+        }
+        h1, h2 { color: #ffaa00; }
+        #auth-box, #chat-container {
+            width: 100%; max-width: 400px; background: #2a2a2a; padding: 20px; border-radius: 8px;
+            border: 1px solid #444;
+        }
+        #chat-box {
+            height: 300px; overflow-y: auto; border: 1px solid #444; padding: 10px; background: #1e1e1e; margin-bottom: 10px;
+        }
+        .msg { margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+        .msg .nick { font-weight: bold; color: #ffaa00; }
+        .msg .time { font-size: 0.7em; color: #777; margin-left: 8px; }
+        .msg .checkmarks { font-size: 0.9em; margin-left: 4px; font-weight: bold; }
+        .msg .checkmarks.sent { color: #888; }
+        .msg .checkmarks.read { color: #00aaff; }
+        #online-box { font-size: 0.8em; color: #888; margin-bottom: 10px; }
+        #input-area { display: flex; gap: 5px; width: 100%; max-width: 400px; }
+        input { flex: 1; padding: 10px; background: #1e1e1e; color: #eee; border: 1px solid #555; border-radius: 4px; }
+        button {
+            padding: 10px; background: #ffaa00; color: #000;
+            border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-family: 'Courier New', Courier, monospace;
+        }
+        #key-display { margin-top: 10px; font-size: 0.8em; color: #888; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="auth-box">
+        <h2>Portable Pigeon Pro</h2>
+        <p>Enter your secret key:</p>
+        <input type="text" id="secret-key-input" placeholder="Your secret key...">
+        <button id="auth-btn">Login</button>
+        <p id="error-msg" style="color: red; display: none;">Invalid key!</p>
+        <p id="key-display"></p>
+    </div>
+
+    <div id="chat-container" style="display: none;">
+        <h1>Pigeon Pro</h1>
+        <div id="online-box">Online: -</div>
+        <div id="chat-box"></div>
+        <div id="input-area">
+            <input type="text" id="message-input" placeholder="Type...">
+            <button id="send-btn">Send</button>
+            <button id="record-btn">Rec</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+        const SUPABASE_URL = "https://eghczcpupfesnnfxfifs.supabase.co";
+        const SUPABASE_ANON_KEY = "sb_publishable_zPpFHWBvVbhpWw5a6v9yJw_NI5Wyeo8";
+
+        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const chatId = "main_room";
+        let nickname = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+
+        const BUILT_IN_KEYS = {
+            "MARK2025": "Mark",
+            "ERO2025": "Erofey"
+        };
+
+        let keyDisplayText = 'Your keys (share with friend):\n';
+        for (const [key, name] of Object.entries(BUILT_IN_KEYS)) {
+            keyDisplayText += `${name}: ${key}\n`;
+        }
+        document.getElementById('key-display').textContent = keyDisplayText;
+
+        document.getElementById('auth-btn').addEventListener('click', () => {
+            const key = document.getElementById('secret-key-input').value.trim();
+            if (BUILT_IN_KEYS[key]) {
+                nickname = BUILT_IN_KEYS[key];
+                document.getElementById('auth-box').style.display = 'none';
+                document.getElementById('chat-container').style.display = 'block';
+                setOnline();
+                loadMessages();
+            } else {
+                document.getElementById('error-msg').style.display = 'block';
+            }
+        });
+
+        async function loadMessages() {
+            const { data, error } = await supabase
+                .from('messages')
+                .select('*')
+                .eq('chat_id', chatId)
+                .order('created_at', { ascending: true });
+
+            if (data) {
+                document.getElementById('chat-box').innerHTML = '';
+                data.forEach(msg => displayMessage(msg));
+            }
+        }
+
+        supabase
+            .channel('messages-channel')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` }, payload => {
+                displayMessage(payload.new);
+                if (payload.new.nickname !== nickname && !payload.new.is_read) {
+                    markAsRead(payload.new.id);
+                }
+            })
+            .subscribe();
+
+        function displayMessage(msg) {
+            const chatBox = document.getElementById('chat-box');
+            const div = document.createElement('div');
+            div.className = 'msg';
+            const time = new Date(msg.created_at);
+            const timeStr = `${String(time.getHours()).padStart(2,'0')}:${String(time.getMinutes()).padStart(2,'0')}`;
+            
+            let checkmarksHtml = '';
+            if (msg.nickname === nickname) {
+                if (msg.is_read) {
+                    checkmarksHtml = '<span class="checkmarks read">✔✔</span>';
+                } else {
+                    checkmarksHtml = '<span class="checkmarks sent">✔</span>';
+                }
+            }
+            
+            let content = `<span class="nick">${msg.nickname}:</span> `;
+            if (msg.text) content += msg.text;
+            if (msg.audio) content += `<br><audio controls src="${msg.audio}"></audio>`;
+            content += ` <span class="time">[${timeStr}]</span>${checkmarksHtml}`;
+            
+            div.innerHTML = content;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        async function markAsRead(msgId) {
+            await supabase.from('messages').update({ is_read: true }).eq('id', msgId);
+        }
+
+        async function setOnline() {
+            await supabase.from('online_users').upsert({ nickname, last_seen: new Date() });
+        }
+        setInterval(setOnline, 30000);
+
+        setInterval(async () => {
+            const { data } = await supabase.from('online_users').select('*');
+            if (data) {
+                const online = data.filter(u => (Date.now() - new Date(u.last_seen).getTime()) < 60000);
+                document.getElementById('online-box').innerHTML = 'Online: ' + online.map(u => u.nickname).join(', ');
+            }
+        }, 5000);
+
+        document.getElementById('send-btn').addEventListener('click', async () => {
+            const text = document.getElementById('message-input').value;
+            if (text) {
+                await supabase.from('messages').insert([{ chat_id: chatId, nickname, text }]);
+                document.getElementById('message-input').value = '';
+            }
+        });
+
+        document.getElementById('record-btn').addEventListener('pointerdown', async () => {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+            
+            mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const fileName = `audio_${Date.now()}.webm`;
+                
+                const { data, error } = await supabase.storage.from('audio-messages').upload(fileName, audioBlob);
+                if (data) {
+                    const { data: urlData } = supabase.storage.from('audio-messages').getPublicUrl(fileName);
+                    await supabase.from('messages').insert([{ chat_id: chatId, nickname, audio: urlData.publicUrl }]);
+                }
+            };
+            
+            mediaRecorder.start();
+            document.getElementById('record-btn').textContent = '...';
+        });
+
+        document.getElementById('record-btn').addEventListener('pointerup', () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                document.getElementById('record-btn').textContent = 'Rec';
+            }
+        });
+    </script>
+</body>
+</html>
